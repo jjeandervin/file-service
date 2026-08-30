@@ -1,0 +1,43 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS bundle
+ARG BUILD_CONFIGURATION=Release
+WORKDIR /src
+
+COPY dotnet-tools.json ./
+RUN dotnet tool restore
+
+COPY src/HooviePack.Files.Domain/HooviePack.Files.Domain.csproj src/HooviePack.Files.Domain/
+COPY src/HooviePack.Files.Api/HooviePack.Files.Api.csproj src/HooviePack.Files.Api/
+RUN dotnet restore src/HooviePack.Files.Api/HooviePack.Files.Api.csproj
+
+COPY src/HooviePack.Files.Domain/ src/HooviePack.Files.Domain/
+COPY src/HooviePack.Files.Api/ src/HooviePack.Files.Api/
+RUN dotnet build src/HooviePack.Files.Api/HooviePack.Files.Api.csproj \
+    --configuration "$BUILD_CONFIGURATION" \
+    --no-restore
+RUN DOTNET_ENVIRONMENT=Development \
+    dotnet tool run dotnet-ef -- migrations bundle \
+    --project src/HooviePack.Files.Api/HooviePack.Files.Api.csproj \
+    --startup-project src/HooviePack.Files.Api/HooviePack.Files.Api.csproj \
+    --context FilesDbContext \
+    --configuration "$BUILD_CONFIGURATION" \
+    --no-build \
+    --output /app/efbundle \
+    --force \
+    --no-color
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=bundle --chown=app:app /app/efbundle ./efbundle
+COPY --chown=app:app src/HooviePack.Files.Api/appsettings.json ./appsettings.json
+COPY --chown=app:app src/HooviePack.Files.Api/appsettings.Production.json ./appsettings.Production.json
+
+USER app
+ENV ASPNETCORE_ENVIRONMENT=Production \
+    DOTNET_ENVIRONMENT=Production
+
+ENTRYPOINT ["/app/efbundle", "--no-color"]
