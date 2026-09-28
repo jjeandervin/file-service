@@ -1,0 +1,21 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# IDE and operating-system files
+.idea/
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+.DS_Store
+Thumbs.db
+
+# .NET outputs
+**/bin/
+**/obj/
+**/TestResults/
+*.log

@@ -1,0 +1,43 @@
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS bundle
+ARG BUILD_CONFIGURATION=Release
+WORKDIR /src
+
+COPY dotnet-tools.json ./
+RUN dotnet tool restore
+
+COPY src/FileService.Contracts/FileService.Contracts.csproj src/FileService.Contracts/
+COPY src/FileService.Api/FileService.Api.csproj src/FileService.Api/
+RUN dotnet restore src/FileService.Api/FileService.Api.csproj
+
+COPY src/FileService.Contracts/ src/FileService.Contracts/
+COPY src/FileService.Api/ src/FileService.Api/
+RUN dotnet build src/FileService.Api/FileService.Api.csproj \
+    --configuration "$BUILD_CONFIGURATION" \
+    --no-restore
+RUN DOTNET_ENVIRONMENT=Development \
+    dotnet tool run dotnet-ef -- migrations bundle \
+    --project src/FileService.Api/FileService.Api.csproj \
+    --startup-project src/FileService.Api/FileService.Api.csproj \
+    --context FilesDbContext \
+    --configuration "$BUILD_CONFIGURATION" \
+    --no-build \
+    --output /app/efbundle \
+    --force \
+    --no-color
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=bundle --chown=app:app /app/efbundle ./efbundle
+COPY --chown=app:app src/FileService.Api/appsettings.json ./appsettings.json
+COPY --chown=app:app src/FileService.Api/appsettings.Production.json ./appsettings.Production.json
+
+USER app
+ENV ASPNETCORE_ENVIRONMENT=Production \
+    DOTNET_ENVIRONMENT=Production
+
+ENTRYPOINT ["/app/efbundle", "--no-color"]
