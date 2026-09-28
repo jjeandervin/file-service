@@ -27,10 +27,10 @@ builder.Services.AddOptions<FileStorageOptions>()
                    (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps),
         "FileStorage:ServiceUrl must be an absolute HTTP(S) URL when provided.")
     .ValidateOnStart();
-builder.Services.AddOptions<InternalApiOptions>()
-    .Bind(builder.Configuration.GetSection(InternalApiOptions.SectionName))
-    .ValidateDataAnnotations()
-    .ValidateOnStart();
+// Validates every client at startup (see the GetRequiredService call below) and throws on any problem.
+builder.Services.AddSingleton(services => ClientRegistry.Create(
+    services.GetRequiredService<IConfiguration>(),
+    services.GetRequiredService<IOptions<FileStorageOptions>>().Value));
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 if (string.IsNullOrWhiteSpace(connectionString))
@@ -56,17 +56,34 @@ builder.Services.AddHealthChecks()
         failureStatus: HealthStatus.Unhealthy,
         tags: ["ready"],
         timeout: TimeSpan.FromSeconds(4));
+if (builder.Configuration.GetValue<bool>($"{FileStorageOptions.SectionName}:{nameof(FileStorageOptions.CheckBucketOnReady)}"))
+{
+    builder.Services.AddHealthChecks().AddCheck<S3BucketHealthCheck>(
+        "s3-bucket",
+        failureStatus: HealthStatus.Unhealthy,
+        tags: ["ready"],
+        timeout: TimeSpan.FromSeconds(4));
+}
+
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IAmazonS3>(services =>
     S3ObjectStorage.CreateClient(services.GetRequiredService<IOptions<FileStorageOptions>>().Value));
 builder.Services.AddSingleton<IObjectStorage, S3ObjectStorage>();
+builder.Services.AddScoped<CallerClientAccessor>();
+builder.Services.AddScoped<ICallerClient>(services =>
+    services.GetRequiredService<CallerClientAccessor>().Client
+    ?? throw new InvalidOperationException("The request has no authenticated file client."));
 builder.Services.AddScoped<IFileManager, FileManager>();
+builder.Services.AddScoped<PendingUploadCleaner>();
+builder.Services.AddHostedService<PendingUploadCleanupService>();
 
 var app = builder.Build();
 
+app.Services.GetRequiredService<ClientRegistry>().LogConfiguration(app.Logger);
+
 app.UseExceptionHandler();
 app.UseStatusCodePages();
-app.UseMiddleware<InternalApiKeyMiddleware>();
+app.UseMiddleware<ClientAuthenticationMiddleware>();
 
 app.MapControllers();
 

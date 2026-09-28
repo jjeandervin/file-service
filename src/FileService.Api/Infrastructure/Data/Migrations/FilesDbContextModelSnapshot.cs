@@ -32,6 +32,17 @@ namespace FileService.Api.Infrastructure.Data.Migrations
                     b.Property<long?>("ActualSize")
                         .HasColumnType("bigint");
 
+                    b.Property<string>("BucketName")
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)");
+
+                    b.Property<string>("ClientId")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("hooviepack");
+
                     b.Property<string>("ContentType")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -77,6 +88,8 @@ namespace FileService.Api.Infrastructure.Data.Migrations
 
                     b.HasIndex("StorageKey")
                         .IsUnique();
+
+                    b.HasIndex("ClientId", "Status", "CreatedAt");
 
                     b.ToTable("Files", "files");
                 });

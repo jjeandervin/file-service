@@ -1,18 +1,14 @@
 using System.Security.Cryptography;
-using System.Text;
-using FileService.Api.Configuration;
-using Microsoft.Extensions.Options;
 
 namespace FileService.Api.Infrastructure.Security;
 
-public sealed class InternalApiKeyMiddleware(
+public sealed class ClientAuthenticationMiddleware(
     RequestDelegate next,
-    IOptions<InternalApiOptions> options)
+    ClientRegistry registry)
 {
     private const string HeaderName = "X-Internal-Api-Key";
-    private readonly byte[] _configuredKeyHash = Hash(options.Value.ApiKey);
 
-    public async Task InvokeAsync(HttpContext context)
+    public async Task InvokeAsync(HttpContext context, CallerClientAccessor caller)
     {
         if (!context.Request.Path.StartsWithSegments("/files"))
         {
@@ -20,8 +16,16 @@ public sealed class InternalApiKeyMiddleware(
             return;
         }
 
-        var suppliedKeyHash = Hash(context.Request.Headers[HeaderName].ToString());
-        if (!CryptographicOperations.FixedTimeEquals(_configuredKeyHash, suppliedKeyHash))
+        var suppliedKeyHash = ClientRegistry.HashApiKey(context.Request.Headers[HeaderName].ToString());
+        FileClient? matched = null;
+        // Compare against every client without stopping early, so timing does not reveal which one matched.
+        foreach (var client in registry.Clients)
+        {
+            var isMatch = CryptographicOperations.FixedTimeEquals(client.ApiKeyHash, suppliedKeyHash);
+            matched = isMatch ? client : matched;
+        }
+
+        if (matched is null)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(
@@ -37,9 +41,7 @@ public sealed class InternalApiKeyMiddleware(
             return;
         }
 
+        caller.Client = matched;
         await next(context);
     }
-
-    private static byte[] Hash(string value) =>
-        SHA256.HashData(Encoding.UTF8.GetBytes(value ?? string.Empty));
 }

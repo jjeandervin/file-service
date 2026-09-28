@@ -1,12 +1,9 @@
 using FileService.Api.Application;
-using FileService.Api.Configuration;
 using FileService.Api.Domain;
 using FileService.Api.Infrastructure.Data;
 using FileService.Api.Infrastructure.Storage;
 using FileService.Contracts;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 
 namespace FileService.Api.Tests;
 
@@ -170,88 +167,10 @@ public sealed class FileManagerTests
         Size = 1234
     };
 
-    private static FilesDbContext CreateDb()
-    {
-        var options = new DbContextOptionsBuilder<FilesDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        return new FilesDbContext(options);
-    }
+    private static FilesDbContext CreateDb() => TestClients.CreateInMemoryDb();
 
     private static FileManager CreateManager(
         FilesDbContext db,
         FakeObjectStorage storage,
-        DateTimeOffset? now = null)
-    {
-        var options = Options.Create(new FileStorageOptions
-        {
-            BucketName = "private-bucket",
-            Region = "us-east-1",
-            KeyPrefix = "files",
-            MaxFileBytes = 10 * 1024 * 1024,
-            UploadUrlLifetimeMinutes = 5,
-            DownloadUrlLifetimeMinutes = 5,
-            AllowedContentTypes = ["image/jpeg", "image/png", "image/webp"]
-        });
-        return new FileManager(
-            db,
-            storage,
-            options,
-            new FixedTimeProvider(now ?? DateTimeOffset.UtcNow),
-            NullLogger<FileManager>.Instance);
-    }
-
-    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => now;
-    }
-
-    private sealed class FakeObjectStorage : IObjectStorage
-    {
-        public ObjectMetadata? Metadata { get; set; }
-        public string? UploadKey { get; private set; }
-        public long UploadSize { get; private set; }
-        public string? DownloadKey { get; private set; }
-        public int MetadataRequests { get; private set; }
-        public List<string> DeletedKeys { get; } = [];
-
-        public Task<PresignedObjectRequest> CreateUploadRequestAsync(
-            string storageKey,
-            string contentType,
-            long size,
-            DateTimeOffset expiresAt,
-            CancellationToken cancellationToken = default)
-        {
-            UploadKey = storageKey;
-            UploadSize = size;
-            return Task.FromResult(new PresignedObjectRequest(
-                "https://s3.example/upload",
-                new Dictionary<string, string> { ["Content-Type"] = contentType }));
-        }
-
-        public Task<string> CreateDownloadUrlAsync(
-            string storageKey,
-            string originalFileName,
-            string contentType,
-            DateTimeOffset expiresAt,
-            CancellationToken cancellationToken = default)
-        {
-            DownloadKey = storageKey;
-            return Task.FromResult("https://s3.example/download");
-        }
-
-        public Task<ObjectMetadata?> GetMetadataAsync(
-            string storageKey,
-            CancellationToken cancellationToken = default)
-        {
-            MetadataRequests++;
-            return Task.FromResult(Metadata);
-        }
-
-        public Task DeleteAsync(string storageKey, CancellationToken cancellationToken = default)
-        {
-            DeletedKeys.Add(storageKey);
-            return Task.CompletedTask;
-        }
-    }
+        DateTimeOffset? now = null) => TestClients.CreateManager(db, storage, now: now);
 }

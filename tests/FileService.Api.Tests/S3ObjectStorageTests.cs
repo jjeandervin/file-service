@@ -18,6 +18,7 @@ public sealed class S3ObjectStorageTests
         var storage = CreateStorage(client);
 
         var result = await storage.CreateUploadRequestAsync(
+            "private-test-bucket",
             "files/0198/original",
             "image/jpeg",
             4821932,
@@ -43,6 +44,7 @@ public sealed class S3ObjectStorageTests
         var storage = CreateStorage(client);
 
         var url = await storage.CreateDownloadUrlAsync(
+            "private-test-bucket",
             "files/0198/original",
             "poster\"\r\n.jpg",
             "image/jpeg",
@@ -55,6 +57,31 @@ public sealed class S3ObjectStorageTests
         Assert.Contains("poster___.jpg", decoded, StringComparison.Ordinal);
         Assert.DoesNotContain("\r", decoded, StringComparison.Ordinal);
         Assert.DoesNotContain("\n", decoded, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Urls_are_signed_for_the_bucket_passed_per_call()
+    {
+        using var client = new AmazonS3Client(
+            new BasicAWSCredentials("test-access-key", "test-secret-key"),
+            RegionEndpoint.USEast1);
+        var storage = CreateStorage(client);
+
+        var upload = await storage.CreateUploadRequestAsync(
+            "acbf-bucket",
+            "acbf/0198/original",
+            "image/png",
+            10,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        var download = await storage.CreateDownloadUrlAsync(
+            "acbf-bucket",
+            "acbf/0198/original",
+            "a.png",
+            "image/png",
+            DateTimeOffset.UtcNow.AddMinutes(5));
+
+        Assert.StartsWith("acbf-bucket.", new Uri(upload.Url).Host, StringComparison.Ordinal);
+        Assert.StartsWith("acbf-bucket.", new Uri(download).Host, StringComparison.Ordinal);
     }
 
     private static S3ObjectStorage CreateStorage(IAmazonS3 client) => new(

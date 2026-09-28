@@ -33,6 +33,13 @@ public sealed class FilesController(IFileManager fileManager) : ControllerBase
         CancellationToken cancellationToken) =>
         Ok(await fileManager.CreateDownloadAsync(fileId, cancellationToken));
 
+    [HttpPost("downloads")]
+    [ProducesResponseType<BatchDownloadResponse>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<BatchDownloadResponse>> Downloads(
+        [FromBody] BatchDownloadRequest request,
+        CancellationToken cancellationToken) =>
+        Ok(await fileManager.CreateDownloadsAsync(request, cancellationToken));
+
     [HttpDelete("{fileId:guid}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<IActionResult> Delete(Guid fileId, CancellationToken cancellationToken)

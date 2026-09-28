@@ -17,6 +17,7 @@ public sealed record ObjectMetadata(long Size, string ContentType);
 public interface IObjectStorage
 {
     Task<PresignedObjectRequest> CreateUploadRequestAsync(
+        string bucketName,
         string storageKey,
         string contentType,
         long size,
@@ -24,6 +25,7 @@ public interface IObjectStorage
         CancellationToken cancellationToken = default);
 
     Task<string> CreateDownloadUrlAsync(
+        string bucketName,
         string storageKey,
         string originalFileName,
         string contentType,
@@ -31,10 +33,20 @@ public interface IObjectStorage
         CancellationToken cancellationToken = default);
 
     Task<ObjectMetadata?> GetMetadataAsync(
+        string bucketName,
         string storageKey,
         CancellationToken cancellationToken = default);
 
-    Task DeleteAsync(string storageKey, CancellationToken cancellationToken = default);
+    // Returns up to the first count bytes of the object, or null when it does not exist.
+    Task<byte[]?> ReadPrefixAsync(
+        string bucketName,
+        string storageKey,
+        int count,
+        CancellationToken cancellationToken = default);
+
+    Task DeleteAsync(string bucketName, string storageKey, CancellationToken cancellationToken = default);
+
+    Task<bool> BucketExistsAsync(string bucketName, CancellationToken cancellationToken = default);
 }
 
 public sealed class S3ObjectStorage(
@@ -44,6 +56,7 @@ public sealed class S3ObjectStorage(
     private readonly FileStorageOptions _options = options.Value;
 
     public async Task<PresignedObjectRequest> CreateUploadRequestAsync(
+        string bucketName,
         string storageKey,
         string contentType,
         long size,
@@ -55,7 +68,7 @@ public sealed class S3ObjectStorage(
         {
             var request = new GetPreSignedUrlRequest
             {
-                BucketName = _options.BucketName,
+                BucketName = bucketName,
                 Key = storageKey,
                 Verb = HttpVerb.PUT,
                 ContentType = contentType,
@@ -78,6 +91,7 @@ public sealed class S3ObjectStorage(
     }
 
     public async Task<string> CreateDownloadUrlAsync(
+        string bucketName,
         string storageKey,
         string originalFileName,
         string contentType,
@@ -89,7 +103,7 @@ public sealed class S3ObjectStorage(
         {
             var request = new GetPreSignedUrlRequest
             {
-                BucketName = _options.BucketName,
+                BucketName = bucketName,
                 Key = storageKey,
                 Verb = HttpVerb.GET,
                 Expires = expiresAt.UtcDateTime,
@@ -107,13 +121,14 @@ public sealed class S3ObjectStorage(
     }
 
     public async Task<ObjectMetadata?> GetMetadataAsync(
+        string bucketName,
         string storageKey,
         CancellationToken cancellationToken = default)
     {
         try
         {
             var response = await s3.GetObjectMetadataAsync(
-                new GetObjectMetadataRequest { BucketName = _options.BucketName, Key = storageKey },
+                new GetObjectMetadataRequest { BucketName = bucketName, Key = storageKey },
                 cancellationToken);
             return new ObjectMetadata(response.ContentLength, response.Headers.ContentType ?? string.Empty);
         }
@@ -127,12 +142,69 @@ public sealed class S3ObjectStorage(
         }
     }
 
-    public async Task DeleteAsync(string storageKey, CancellationToken cancellationToken = default)
+    public async Task<byte[]?> ReadPrefixAsync(
+        string bucketName,
+        string storageKey,
+        int count,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(count, 1);
+        try
+        {
+            using var response = await s3.GetObjectAsync(
+                new GetObjectRequest
+                {
+                    BucketName = bucketName,
+                    Key = storageKey,
+                    ByteRange = new ByteRange(0, count - 1)
+                },
+                cancellationToken);
+            var buffer = new byte[count];
+            var read = await response.ResponseStream.ReadAtLeastAsync(
+                buffer,
+                count,
+                throwOnEndOfStream: false,
+                cancellationToken);
+            return buffer[..read];
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            // A zero-byte object has no satisfiable range.
+            return [];
+        }
+        catch (Exception exception) when (exception is AmazonS3Exception or Amazon.Runtime.AmazonServiceException)
+        {
+            throw new ObjectStorageUnavailableException("Could not read an object.", exception);
+        }
+    }
+
+    public async Task<bool> BucketExistsAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await s3.HeadBucketAsync(new HeadBucketRequest { BucketName = bucketName }, cancellationToken);
+            return true;
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is AmazonS3Exception or Amazon.Runtime.AmazonServiceException)
+        {
+            throw new ObjectStorageUnavailableException("Could not inspect a bucket.", exception);
+        }
+    }
+
+    public async Task DeleteAsync(string bucketName, string storageKey, CancellationToken cancellationToken = default)
     {
         try
         {
             await s3.DeleteObjectAsync(
-                new DeleteObjectRequest { BucketName = _options.BucketName, Key = storageKey },
+                new DeleteObjectRequest { BucketName = bucketName, Key = storageKey },
                 cancellationToken);
         }
         catch (Exception exception) when (exception is AmazonS3Exception or Amazon.Runtime.AmazonServiceException)

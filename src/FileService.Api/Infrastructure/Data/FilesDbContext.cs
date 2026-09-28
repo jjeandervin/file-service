@@ -18,6 +18,9 @@ public sealed class FilesDbContext(DbContextOptions<FilesDbContext> options) : D
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => x.StorageKey).IsUnique();
             entity.HasIndex(x => x.LegacySourcePath).IsUnique();
+            entity.HasIndex(x => new { x.ClientId, x.Status, x.CreatedAt });
+            entity.Property(x => x.ClientId).HasMaxLength(32).HasDefaultValue(FileRecord.DefaultClientId);
+            entity.Property(x => x.BucketName).HasMaxLength(63);
             entity.Property(x => x.StorageKey).HasMaxLength(500);
             entity.Property(x => x.OriginalFileName).HasMaxLength(255);
             entity.Property(x => x.ContentType).HasMaxLength(100);
