@@ -1,0 +1,13 @@
+title = "file-service secret scanning"
+minVersion = "8.25.0"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Intentional CI-only placeholders and self-describing test API keys"
+regexTarget = "match"
+regexes = [
+  '''ci-only-not-a-secret''',
+  '''[a-z-]*api-key-with-[a-z0-9-]*characters[a-z-]*'''
+]

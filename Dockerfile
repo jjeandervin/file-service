@@ -18,6 +18,14 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/jjeandervin/file-service" \
+      org.opencontainers.image.title="file-service" \
+      org.opencontainers.image.description="Shared internal file service: presigned S3 uploads and downloads." \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION"
+
 WORKDIR /app
 COPY --from=build --chown=app:app /app/publish .
 

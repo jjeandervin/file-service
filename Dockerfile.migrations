@@ -30,6 +30,14 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends libgssapi-krb5-2 \
     && rm -rf /var/lib/apt/lists/*
 
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/jjeandervin/file-service" \
+      org.opencontainers.image.title="file-service-migrations" \
+      org.opencontainers.image.description="EF Core migrations bundle for file-service." \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$REVISION"
+
 WORKDIR /app
 
 COPY --from=bundle --chown=app:app /app/efbundle ./efbundle

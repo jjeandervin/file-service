@@ -1,0 +1,268 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a release in the middle of pushing images.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  IMAGE_PREFIX: ghcr.io/jjeandervin
+
+jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan Git history with Gitleaks
+        shell: bash
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE:/repo" \
+            --workdir /repo \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git --redact --verbose --config .gitleaks.toml .
+
+  build-test:
+    name: Build, test, and dependency audit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: fileservice_tests
+          POSTGRES_USER: fileservice_tests
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fileservice_tests -d fileservice_tests"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Tests create and drop their own databases, so this user must be allowed to CREATE DATABASE.
+      FILESERVICE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=fileservice_tests;Username=fileservice_tests;Password=ci-only-not-a-secret
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore FileService.slnx
+
+      - name: Check direct and transitive NuGet dependencies
+        shell: bash
+        run: |
+          dotnet package list \
+            --project FileService.slnx \
+            --vulnerable \
+            --include-transitive \
+            --format json \
+            --output-version 1 \
+            --no-restore > nuget-vulnerabilities.json
+          cat nuget-vulnerabilities.json
+          jq -e '
+            [
+              .projects[]?.frameworks[]?
+              | ((.topLevelPackages // []) + (.transitivePackages // []))[]?
+              | select((.vulnerabilities // []) | length > 0)
+            ]
+            | length == 0
+          ' nuget-vulnerabilities.json
+
+      - name: Build
+        run: dotnet build FileService.slnx --configuration Release --no-restore -warnaserror
+
+      - name: Test
+        run: dotnet test FileService.slnx --configuration Release --no-build --logger "console;verbosity=normal"
+
+  containers:
+    name: Container build, migrations, readiness, and scan
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: fileservice
+          POSTGRES_USER: fileservice
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fileservice -d fileservice"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CONNECTION: Host=127.0.0.1;Port=5432;Database=fileservice;Username=fileservice;Password=ci-only-not-a-secret
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build images
+        run: |
+          docker build --pull --file Dockerfile --tag file-service:ci .
+          docker build --pull --file Dockerfile.migrations --tag file-service-migrations:ci .
+
+      - name: Apply migrations and verify idempotency
+        shell: bash
+        run: |
+          for _ in 1 2; do
+            docker run --rm --network host \
+              --env "ConnectionStrings__DefaultConnection=$CONNECTION" \
+              file-service-migrations:ci
+          done
+
+      - name: Verify migration failures are non-zero
+        shell: bash
+        run: |
+          if docker run --rm --network host \
+            --env 'ConnectionStrings__DefaultConnection=Host=127.0.0.1;Port=1;Database=invalid;Username=invalid;Password=invalid;Timeout=2;Command Timeout=2' \
+            file-service-migrations:ci; then
+            echo "Migration image unexpectedly succeeded with an unreachable database." >&2
+            exit 1
+          fi
+
+      - name: API reaches /health/ready in legacy mode
+        shell: bash
+        run: |
+          docker run --detach --name files-api --network host \
+            --env ASPNETCORE_HTTP_PORTS=18080 \
+            --env "ConnectionStrings__DefaultConnection=$CONNECTION" \
+            --env FileStorage__BucketName=ci-bucket \
+            --env FileStorage__Region=us-east-1 \
+            --env InternalApi__ApiKey=ci-only-not-a-secret-internal-api-key \
+            file-service:ci
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/health/ready; then
+              echo
+              docker logs files-api 2>&1 | grep --quiet "Legacy single-key mode"
+              docker logs files-api 2>&1 | grep --quiet "File client hooviepack uses key prefix files"
+              if docker logs files-api 2>&1 | grep --quiet "ci-only-not-a-secret-internal-api-key"; then
+                echo "The API key appeared in the logs." >&2
+                exit 1
+              fi
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs files-api
+          exit 1
+
+      - name: API refuses to start with invalid clients
+        shell: bash
+        run: |
+          if docker run --rm --network host \
+            --env ASPNETCORE_HTTP_PORTS=18081 \
+            --env "ConnectionStrings__DefaultConnection=$CONNECTION" \
+            --env FileStorage__BucketName=ci-bucket \
+            --env FileStorage__Region=us-east-1 \
+            --env InternalApi__ApiKey=ci-only-not-a-secret-internal-api-key \
+            --env Clients__0__Id=hooviepack \
+            --env Clients__0__ApiKey=ci-only-not-a-secret-client-api-key-0 \
+            --env Clients__0__KeyPrefix=files \
+            file-service:ci; then
+            echo "The API started with both Clients and InternalApi:ApiKey set." >&2
+            exit 1
+          fi
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0
+          cache: true
+
+      - name: Scan images for fixable high and critical vulnerabilities
+        run: |
+          for image in file-service:ci file-service-migrations:ci; do
+            trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$image"
+          done
+
+  publish:
+    name: Publish images to GHCR
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [secret-scan, build-test, containers]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compute tags
+        id: version
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag $GITHUB_REF_NAME is not vX.Y.Z." >&2
+            exit 1
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          tags="$version $GITHUB_SHA"
+          # Pre-releases don't move the X.Y tag.
+          if [[ -z "${BASH_REMATCH[4]}" ]]; then
+            tags="$tags ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      # No "latest" tag: deployments pin versions.
+      - name: Build and push
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAGS: ${{ steps.version.outputs.tags }}
+        run: |
+          for pair in "Dockerfile:file-service" "Dockerfile.migrations:file-service-migrations"; do
+            dockerfile="${pair%%:*}"
+            image="$IMAGE_PREFIX/${pair#*:}"
+            tag_args=()
+            for tag in $TAGS; do
+              tag_args+=(--tag "$image:$tag")
+            done
+            docker build --pull \
+              --file "$dockerfile" \
+              --build-arg "VERSION=$VERSION" \
+              --build-arg "REVISION=$GITHUB_SHA" \
+              --label "org.opencontainers.image.created=$(date --utc +%Y-%m-%dT%H:%M:%SZ)" \
+              "${tag_args[@]}" \
+              .
+            for tag in $TAGS; do
+              docker push "$image:$tag"
+            done
+          done
