@@ -74,7 +74,8 @@ internal static class TestClients
         string clientId,
         DateTimeOffset createdAt,
         string? bucketName = null,
-        FileStatus status = FileStatus.Pending)
+        FileStatus status = FileStatus.Pending,
+        string? legacySourcePath = null)
     {
         var id = Guid.CreateVersion7(createdAt);
         return new FileRecord
@@ -82,6 +83,7 @@ internal static class TestClients
             Id = id,
             ClientId = clientId,
             BucketName = bucketName,
+            LegacySourcePath = legacySourcePath,
             StorageKey = $"{clientId}/{id:N}/original",
             OriginalFileName = "poster.jpg",
             ContentType = "image/jpeg",

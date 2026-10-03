@@ -43,6 +43,29 @@ public sealed class PendingUploadCleanupTests
     }
 
     [Fact]
+    public async Task Leaves_pending_legacy_imports_alone()
+    {
+        var dbName = Guid.NewGuid().ToString();
+        var legacy = TestClients.PendingRecord(
+            "hooviepack",
+            Now.AddYears(-2),
+            legacySourcePath: "posts/2024/photo.jpg");
+        await using (var seed = TestClients.CreateInMemoryDb(dbName))
+        {
+            seed.Files.AddRange(legacy, TestClients.PendingRecord("hooviepack", Now.AddHours(-25)));
+            await seed.SaveChangesAsync();
+        }
+
+        var storage = new FakeObjectStorage();
+        await using var db = TestClients.CreateInMemoryDb(dbName);
+        var removed = await CreateCleaner(db, storage, new FakeTimeProvider(Now)).RunAsync();
+
+        Assert.Equal(1, removed);
+        Assert.DoesNotContain(legacy.StorageKey, storage.DeletedKeys);
+        Assert.Equal(legacy.Id, (await db.Files.SingleAsync()).Id);
+    }
+
+    [Fact]
     public async Task Works_through_more_than_one_batch()
     {
         var dbName = Guid.NewGuid().ToString();

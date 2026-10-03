@@ -257,6 +257,8 @@ To move off it, set `Clients__0__Id=hooviepack`, `Clients__0__ApiKey=<the same k
 
 A background service deletes `Pending` records older than `PendingUploadTtlHours`, 100 at a time. For each one it deletes the S3 object first, then the row, the same order as `DELETE /files/{id}`. Failures are logged and retried on the next cycle; they never stop the service.
 
+Records with a `LegacySourcePath` are skipped. HooviePack's legacy importer creates them with the original media's date, so an interrupted import would otherwise look abandoned straight away.
+
 ## S3 bucket setup
 
 Browsers PUT and GET the presigned URLs directly, so the bucket needs a CORS rule allowing **each client's web origin**:

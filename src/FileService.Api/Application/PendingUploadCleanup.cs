@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 namespace FileService.Api.Application;
 
 // Deletes uploads that were created but never completed, once they are older than PendingUploadTtlHours.
+// Records with a LegacySourcePath are never touched.
 public sealed class PendingUploadCleaner(
     FilesDbContext db,
     IObjectStorage objectStorage,
@@ -27,8 +28,11 @@ public sealed class PendingUploadCleaner(
         var removed = 0;
         while (true)
         {
+            // Legacy imports are skipped: HooviePack's importer backdates CreatedAt to the original media's date,
+            // so an interrupted import would look abandoned immediately. They are left for the importer to finish.
             var batch = await db.Files
-                .Where(x => x.Status == FileStatus.Pending && x.CreatedAt < cutoff && !failed.Contains(x.Id))
+                .Where(x => x.Status == FileStatus.Pending && x.CreatedAt < cutoff && x.LegacySourcePath == null &&
+                            !failed.Contains(x.Id))
                 .OrderBy(x => x.CreatedAt)
                 .ThenBy(x => x.Id)
                 .Take(BatchSize)
