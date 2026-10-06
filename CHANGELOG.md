@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-## [1.0.0] - not yet released
+## [1.0.0] - 2026-10-06
 
 The first release as a standalone, multi-client service, extracted from `hoovie-pack` with its history. It runs unchanged on HooviePack's existing configuration (legacy single-key mode) and database.
 
